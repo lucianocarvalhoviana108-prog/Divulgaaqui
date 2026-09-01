@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#1B4B43" />
+<title>DivulgaAqui — Tudo que acontece na sua cidade</title>
+<meta name="description" content="Encontre empresas, promoções e eventos da sua cidade, tudo em um só lugar." />
+
+<!-- React + Babel (transpila JSX direto no navegador — sem precisar de build/Node) -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- Tailwind via CDN (gera as classes na hora, sem build) -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          bg: "#FBF8F3", surface: "#FFFFFF", ink: "#201F1D", inksoft: "#6B6459",
+          primary: "#1B4B43", primaryink: "#F3F7F5", accent: "#E0475E", gold: "#E0A429", line: "#E9E2D6"
+        }
+      }
+    }
+  };
+</script>
+
+<!-- Supabase (build UMD, expõe window.supabase) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+
+<style>
+  body { background: #FBF8F3; color: #201F1D; }
+  .card { background: #FFFFFF; border: 1px solid #E9E2D6; border-radius: 18px; }
+  .chip { border: 1px solid #E9E2D6; border-radius: 999px; background: #FFFFFF; }
+  .chip.active { background: #1B4B43; color: #F3F7F5; border-color: #1B4B43; }
+  .btn-primary { background: #1B4B43; color: #F3F7F5; border-radius: 14px; font-weight: 600; }
+  .btn-accent { background: #E0475E; color: #fff; border-radius: 14px; font-weight: 600; }
+  .btn-ghost { background: #FFFFFF; color: #201F1D; border: 1px solid #E9E2D6; border-radius: 14px; font-weight: 600; }
+  .input { background: #FFFFFF; border: 1px solid #E9E2D6; border-radius: 14px; }
+  .scrollx { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px; }
+  .scrollx::-webkit-scrollbar { display: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+// =========================================================
+// SUPABASE — já configurado com o projeto real do DivulgaAqui
+// =========================================================
+const SUPABASE_URL = "https://fqbpthkbaakirzuubngc.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_vJevCQApssTYj0Cn2ULoEA_stqXM39m";
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const CITY_SLUG = "sao-pedro-do-piaui";
+
+function slugify(text) {
+  return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+
+// =========================================================
+// PEQUENOS COMPONENTES
+// =========================================================
+function Stars({ value }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span style={{ color: "#E0A429" }}>★</span>
+      <span className="text-xs font-semibold">{Number(value ?? 0).toFixed(1)}</span>
+    </span>
+  );
+}
+
+function BusinessCard({ biz, category, fav, onOpen, onToggleFav }) {
+  return (
+    <button onClick={() => onOpen(biz.id)} className="card w-full flex gap-3 p-3 text-left">
+      <div className="flex items-center justify-center text-2xl rounded-2xl flex-shrink-0" style={{ background: "#EDE7DA", width: 64, height: 64 }}>
+        {category?.emoji || "🏪"}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-sm font-semibold truncate">
+            {biz.name} {biz.verified && <span title="Verificada">✅</span>}
+          </p>
+          <span onClick={(e) => { e.stopPropagation(); onToggleFav(biz.id); }}>
+            {fav ? "❤️" : "🤍"}
+          </span>
+        </div>
+        <p className="text-xs text-inksoft">{category?.name || "Empresa"} · {biz.neighborhood}</p>
+        <Stars value={biz.rating || 5} />
+      </div>
+    </button>
+  );
+}
+
+function OfferCard({ offer, biz, category, fav, onOpen, onToggleFav }) {
+  const discount = Math.round(100 - (offer.new_price_cents / offer.old_price_cents) * 100);
+  return (
+    <div className="card flex-shrink-0" style={{ minWidth: 210, maxWidth: 210 }}>
+      <div className="flex items-center justify-center text-3xl relative rounded-t-2xl" style={{ background: "#EDE7DA", height: 90 }}>
+        {category?.emoji || "🏪"}
+        <span className="absolute top-2 left-2 bg-accent text-white text-[11px] font-bold rounded px-1.5 py-0.5">{discount}% OFF</span>
+        <span onClick={() => onToggleFav(offer.id)} className="absolute top-2 right-2 bg-white/90 rounded-full px-1.5 py-1">{fav ? "❤️" : "🤍"}</span>
+      </div>
+      <div className="p-3">
+        <p className="text-sm font-semibold leading-tight" style={{ minHeight: 34 }}>{offer.title}</p>
+        <p className="text-xs text-inksoft">{biz?.name}</p>
+        <div className="flex items-baseline gap-2 mt-1">
+          <span className="text-xs line-through text-inksoft">R$ {(offer.old_price_cents / 100).toFixed(2)}</span>
+          <span className="text-base font-bold text-accent">R$ {(offer.new_price_cents / 100).toFixed(2)}</span>
+        </div>
+        <button onClick={() => onOpen(offer.business_id)} className="btn-primary w-full text-sm py-2 mt-2">Ver oferta</button>
+      </div>
+    </div>
+  );
+}
+
+function EventCard({ ev, onWhatsapp }) {
+  return (
+    <div className="card p-3">
+      <p className="text-sm font-semibold">{ev.title}</p>
+      <p className="text-xs mt-1 text-inksoft">📅 {ev.event_date} {ev.event_time ? "· " + ev.event_time : ""} · {ev.location}</p>
+      <p className="text-xs mt-1">{ev.description}</p>
+      <div className="flex gap-2 mt-3">
+        <button onClick={() => onWhatsapp(ev.whatsapp, `Olá! Vi o evento "${ev.title}" no DivulgaAqui.`)} className="btn-primary text-xs px-3 py-2">💬 WhatsApp</button>
+      </div>
+    </div>
+  );
+}
+
+// =========================================================
+// APP PRINCIPAL
+// =========================================================
+function App() {
+  const [tab, setTab] = useState("home");
+  const [query, setQuery] = useState("");
+  const [activeCat, setActiveCat] = useState(null);
+  const [categories, setCategories] = useState([]);
+  const [businesses, setBusinesses] = useState([]);
+  const [offers, setOffers] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [reviews, setReviews] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [openBizId, setOpenBizId] = useState(null);
+  const [favs, setFavs] = useState({ business: new Set(), offer: new Set() });
+  const [showRegister, setShowRegister] = useState(false);
+  const [registerDone, setRegisterDone] = useState(false);
+  const [registerError, setRegisterError] = useState(null);
+
+  useEffect(() => {
+    async function load() {
+      const [{ data: cats }, { data: bizs }, { data: offs }, { data: evs }, { data: revs }] = await Promise.all([
+        db.from("categories").select("*").order("sort_order"),
+        db.from("businesses").select("*").eq("approved", true).eq("status", "approved"),
+        db.from("offers").select("*").eq("approved", true).eq("active", true),
+        db.from("events").select("*").eq("approved", true),
+        db.from("reviews").select("*")
+      ]);
+      setCategories(cats || []);
+      setBusinesses(bizs || []);
+      setOffers(offs || []);
+      setEvents(evs || []);
+      setReviews(revs || []);
+      setLoading(false);
+    }
+    load();
+  }, []);
+
+  const categoryById = (id) => categories.find((c) => c.id === id);
+  const businessById = (id) => businesses.find((b) => b.id === id);
+
+  const toggleFav = (kind, id) => {
+    setFavs((prev) => {
+      const next = { ...prev, [kind]: new Set(prev[kind]) };
+      next[kind].has(id) ? next[kind].delete(id) : next[kind].add(id);
+      return next;
+    });
+  };
+
+  const openWhatsapp = (whatsapp, message) =>
+    window.open(`https://wa.me/${whatsapp}?text=${encodeURIComponent(message)}`, "_blank");
+
+  const filteredBusinesses = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return businesses.filter((b) => {
+      const matchesCat = activeCat ? b.category_id === activeCat : true;
+      const matchesQ = q ? (b.name || "").toLowerCase().includes(q) || (b.description || "").toLowerCase().includes(q) : true;
+      return matchesCat && matchesQ;
+    });
+  }, [businesses, query, activeCat]);
+
+  const Header = () => (
+    <div className="px-4 pt-5 pb-3 bg-primary text-primaryink rounded-b-[22px]">
+      <p className="text-xl font-bold">DivulgaAqui</p>
+      <p className="text-xs opacity-80 mt-0.5">Tudo que acontece na sua cidade, em um só lugar.</p>
+      <div className="input flex items-center gap-2 px-3 py-2.5 mt-3">
+        <span>🔎</span>
+        <input
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setTab("explore"); }}
+          placeholder="O que você está procurando?"
+          className="flex-1 text-sm bg-transparent outline-none text-ink"
+        />
+      </div>
+    </div>
+  );
+
+  const HomeView = () => (
+    <div className="pb-4">
+      <Header />
+      {offers.length > 0 && (
+        <div className="px-4 mt-4">
+          <p className="text-sm font-semibold mb-2">🔥 Ofertas de hoje</p>
+          <div className="scrollx">
+            {offers.slice(0, 6).map((o) => (
+              <OfferCard key={o.id} offer={o} biz={businessById(o.business_id)} category={categoryById(businessById(o.business_id)?.category_id)}
+                fav={favs.offer.has(o.id)} onOpen={setOpenBizId} onToggleFav={(id) => toggleFav("offer", id)} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="px-4 mt-6">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-sm font-semibold">📍 Categorias</p>
+          <button onClick={() => { setActiveCat(null); setTab("explore"); }} className="text-xs font-semibold text-primary">Ver todas</button>
+        </div>
+        <div className="grid grid-cols-4 gap-3">
+          {categories.map((c) => (
+            <button key={c.id} onClick={() => { setActiveCat(c.id); setTab("explore"); }} className="flex flex-col items-center gap-1">
+              <div className="flex items-center justify-center rounded-2xl text-2xl" style={{ background: "#EDE7DA", width: 52, height: 52 }}>{c.emoji}</div>
+              <span className="text-[11px] text-center leading-tight text-inksoft">{c.name}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="px-4 mt-6">
+        <p className="text-sm font-semibold mb-2">⭐ Empresas</p>
+        <div className="flex flex-col gap-2">
+          {businesses.slice(0, 6).map((b) => (
+            <BusinessCard key={b.id} biz={b} category={categoryById(b.category_id)} fav={favs.business.has(b.id)} onOpen={setOpenBizId} onToggleFav={(id) => toggleFav("business", id)} />
+          ))}
+          {businesses.length === 0 && !loading && (
+            <div className="card p-6 text-center text-sm text-inksoft">Ainda não temos empresas cadastradas por aqui. Seja a primeira!</div>
+          )}
+        </div>
+      </div>
+
+      {events.length > 0 && (
+        <div className="px-4 mt-6">
+          <p className="text-sm font-semibold mb-2">📅 Eventos</p>
+          <div className="flex flex-col gap-2">
+            {events.slice(0, 2).map((ev) => <EventCard key={ev.id} ev={ev} onWhatsapp={openWhatsapp} />)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const ExploreView = () => (
+    <div className="pb-4">
+      <Header />
+      <div className="px-4 mt-4">
+        <div className="scrollx mb-3">
+          <button onClick={() => setActiveCat(null)} className={`chip text-xs px-3 py-1.5 whitespace-nowrap ${!activeCat ? "active" : ""}`}>Todas</button>
+          {categories.map((c) => (
+            <button key={c.id} onClick={() => setActiveCat(c.id)} className={`chip text-xs px-3 py-1.5 whitespace-nowrap ${activeCat === c.id ? "active" : ""}`}>{c.emoji} {c.name}</button>
+          ))}
+        </div>
+        <p className="text-xs mb-2 text-inksoft">{filteredBusinesses.length} resultado(s)</p>
+        <div className="flex flex-col gap-2">
+          {filteredBusinesses.map((b) => (
+            <BusinessCard key={b.id} biz={b} category={categoryById(b.category_id)} fav={favs.business.has(b.id)} onOpen={setOpenBizId} onToggleFav={(id) => toggleFav("business", id)} />
+          ))}
+          {filteredBusinesses.length === 0 && <div className="card p-6 text-center text-sm text-inksoft">Nada por aqui ainda. Tente outra busca.</div>}
+        </div>
+      </div>
+    </div>
+  );
+
+  const OffersView = () => (
+    <div className="pb-4">
+      <div className="px-4 pt-5 pb-2">
+        <p className="text-lg font-bold">🔥 Ofertas</p>
+      </div>
+      <div className="px-4 grid grid-cols-2 gap-3">
+        {offers.map((o) => (
+          <OfferCard key={o.id} offer={o} biz={businessById(o.business_id)} category={categoryById(businessById(o.business_id)?.category_id)}
+            fav={favs.offer.has(o.id)} onOpen={setOpenBizId} onToggleFav={(id) => toggleFav("offer", id)} />
+        ))}
+        {offers.length === 0 && <p className="text-sm text-inksoft col-span-2 text-center py-6">Nenhuma oferta ativa ainda.</p>}
+      </div>
+    </div>
+  );
+
+  const EventsView = () => (
+    <div className="pb-4">
+      <div className="px-4 pt-5 pb-2"><p className="text-lg font-bold">📅 Eventos</p></div>
+      <div className="px-4 flex flex-col gap-2">
+        {events.map((ev) => <EventCard key={ev.id} ev={ev} onWhatsapp={openWhatsapp} />)}
+        {events.length === 0 && <p className="text-sm text-inksoft text-center py-6">Nenhum evento cadastrado ainda.</p>}
+      </div>
+    </div>
+  );
+
+  const ProfileView = () => (
+    <div className="pb-4">
+      <div className="px-4 pt-5 pb-2">
+        <p className="text-lg font-bold">Perfil</p>
+        <p className="text-xs text-inksoft">Visitante · São Pedro do Piauí</p>
+      </div>
+      <div className="px-4 mt-3">
+        <button onClick={() => setShowRegister(true)} className="btn-accent w-full py-3 text-sm">➕ Divulgue seu negócio</button>
+      </div>
+      <div className="px-4 mt-6">
+        <p className="text-sm font-semibold mb-2">❤️ Favoritos</p>
+        <p className="text-xs text-inksoft">{favs.business.size} empresa(s) e {favs.offer.size} oferta(s) favoritadas nesta sessão.</p>
+      </div>
+    </div>
+  );
+
+  // -------- Detalhe da empresa --------
+  const BizDetail = () => {
+    const biz = businessById(openBizId);
+    if (!biz) return null;
+    const category = categoryById(biz.category_id);
+    const bizOffers = offers.filter((o) => o.business_id === biz.id);
+    const bizReviews = reviews.filter((r) => r.business_id === biz.id);
+    return (
+      <div className="fixed inset-0 bg-bg overflow-y-auto z-30">
+        <div className="flex items-center justify-center text-5xl relative" style={{ background: "#EDE7DA", height: 150 }}>
+          {category?.emoji || "🏪"}
+          <button onClick={() => setOpenBizId(null)} className="absolute top-4 left-4 bg-white/90 rounded-full p-2">‹</button>
+        </div>
+        <div className="px-4 pt-4 pb-8">
+          <p className="text-lg font-bold">{biz.name} {biz.verified && "✅"}</p>
+          <p className="text-xs mt-1 text-inksoft">{category?.name} · {biz.opening_hours}</p>
+          <p className="text-sm mt-3">{biz.description}</p>
+          <p className="text-xs mt-2 text-inksoft">📍 {biz.address}</p>
+          <div className="grid grid-cols-2 gap-2 mt-4">
+            <button onClick={() => openWhatsapp(biz.whatsapp, "Olá! Vi sua oferta no DivulgaAqui e gostaria de saber mais.")} className="btn-primary py-2.5 text-sm">💬 WhatsApp</button>
+            <a href={`tel:${(biz.phone || "").replace(/\D/g, "")}`} className="btn-ghost py-2.5 text-sm text-center">📞 Ligar</a>
+            <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(biz.address || "")}`} target="_blank" className="btn-ghost py-2.5 text-sm text-center">🧭 Como chegar</a>
+            <button onClick={() => navigator.share && navigator.share({ title: "DivulgaAqui", text: `Olha essa empresa: ${biz.name}!` })} className="btn-ghost py-2.5 text-sm">🔗 Compartilhar</button>
+          </div>
+          {bizOffers.length > 0 && (
+            <div className="mt-6">
+              <p className="text-sm font-semibold mb-2">🔥 Ofertas</p>
+              <div className="scrollx">
+                {bizOffers.map((o) => <OfferCard key={o.id} offer={o} biz={biz} category={category} fav={favs.offer.has(o.id)} onOpen={() => {}} onToggleFav={(id) => toggleFav("offer", id)} />)}
+              </div>
+            </div>
+          )}
+          <div className="mt-6">
+            <p className="text-sm font-semibold mb-2">Avaliações</p>
+            {bizReviews.length === 0 && <p className="text-xs text-inksoft">Ainda sem avaliações.</p>}
+            {bizReviews.map((r) => (
+              <div key={r.id} className="card p-3 mt-2">
+                <div className="flex items-center justify-between"><p className="text-sm font-semibold">{r.user_id || "Cliente"}</p><Stars value={r.rating} /></div>
+                <p className="text-xs mt-1 text-inksoft">{r.comment}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // -------- Cadastro de negócio --------
+  const RegisterSheet = () => {
+    const [values, setValues] = useState({});
+    const [categoryId, setCategoryId] = useState(categories[0]?.id || "");
+
+    const submit = async (e) => {
+      e.preventDefault();
+      setRegisterError(null);
+      try {
+        const { data: city } = await db.from("cities").select("id").eq("slug", CITY_SLUG).single();
+        if (!city) throw new Error("Cidade não encontrada no banco.");
+        const { error } = await db.from("businesses").insert({
+          city_id: city.id,
+          category_id: categoryId,
+          name: values.name || "",
+          slug: slugify(values.name || "empresa") + "-" + Date.now(),
+          description: values.description || "",
+          phone: values.phone || "",
+          whatsapp: (values.whatsapp || "").replace(/\D/g, ""),
+          address: values.address || "",
+          neighborhood: values.neighborhood || "",
+          opening_hours: values.hours || "",
+          status: "pending",
+          approved: false
+        });
+        if (error) throw error;
+        setRegisterDone(true);
+      } catch (err) {
+        setRegisterError(err.message || "Não foi possível enviar. Tente de novo.");
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 bg-bg overflow-y-auto z-30">
+        <div className="px-4 pt-5 flex items-center gap-2">
+          <button onClick={() => { setShowRegister(false); setRegisterDone(false); }}>‹</button>
+          <p className="text-lg font-bold">Divulgue seu negócio</p>
+        </div>
+        {!registerDone ? (
+          <form onSubmit={submit} className="px-4 mt-4 flex flex-col gap-3 pb-10">
+            <label className="text-xs font-semibold text-inksoft">Nome da empresa
+              <input required className="input w-full text-sm px-3 py-2.5 mt-1" value={values.name || ""} onChange={(e) => setValues((v) => ({ ...v, name: e.target.value }))} />
+            </label>
+            <label className="text-xs font-semibold text-inksoft">Categoria
+              <select className="input w-full text-sm px-3 py-2.5 mt-1" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+              </select>
+            </label>
+            {[["description", "Descrição"], ["phone", "Telefone"], ["whatsapp", "WhatsApp"], ["address", "Endereço"], ["neighborhood", "Bairro"], ["hours", "Horário de funcionamento"]].map(([name, label]) => (
+              <label key={name} className="text-xs font-semibold text-inksoft">{label}
+                <input className="input w-full text-sm px-3 py-2.5 mt-1" value={values[name] || ""} onChange={(e) => setValues((v) => ({ ...v, [name]: e.target.value }))} />
+              </label>
+            ))}
+            {registerError && <p className="text-xs text-accent">{registerError}</p>}
+            <button type="submit" className="btn-accent w-full py-3 text-sm mt-2">Enviar cadastro</button>
+            <p className="text-xs text-center pb-6 text-inksoft">Sua empresa entra em análise antes de aparecer no app.</p>
+          </form>
+        ) : (
+          <div className="px-4 mt-10 text-center">
+            <div className="text-4xl">✅</div>
+            <p className="text-base font-semibold mt-3">Cadastro enviado!</p>
+            <p className="text-sm mt-1 text-inksoft">Sua empresa entrará em análise e aparecerá no DivulgaAqui em breve.</p>
+            <button onClick={() => { setShowRegister(false); setRegisterDone(false); }} className="btn-primary px-6 py-2.5 text-sm mt-5">Voltar</button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const NAV = [
+    { id: "home", label: "Início", icon: "🏠" },
+    { id: "explore", label: "Explorar", icon: "🧭" },
+    { id: "offers", label: "Ofertas", icon: "🔥" },
+    { id: "events", label: "Eventos", icon: "📅" },
+    { id: "profile", label: "Perfil", icon: "👤" }
+  ];
+
+  return (
+    <div style={{ maxWidth: 430, margin: "0 auto", minHeight: "100vh", paddingBottom: 76, position: "relative" }}>
+      {loading && <div className="p-8 text-center text-sm text-inksoft">Carregando...</div>}
+      {!loading && tab === "home" && <HomeView />}
+      {!loading && tab === "explore" && <ExploreView />}
+      {!loading && tab === "offers" && <OffersView />}
+      {!loading && tab === "events" && <EventsView />}
+      {!loading && tab === "profile" && <ProfileView />}
+      {openBizId && <BizDetail />}
+      {showRegister && <RegisterSheet />}
+      <nav className="fixed bottom-0 left-0 right-0 bg-surface border-t flex justify-around py-2.5 px-2 z-20" style={{ borderColor: "#E9E2D6", maxWidth: 430, margin: "0 auto" }}>
+        {NAV.map(({ id, label, icon }) => (
+          <button key={id} onClick={() => { setTab(id); setOpenBizId(null); setShowRegister(false); }}
+            className="flex flex-col items-center gap-0.5 text-[11px]" style={{ color: tab === id ? "#1B4B43" : "#6B6459" }}>
+            <span style={{ fontSize: 18 }}>{icon}</span>{label}
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
